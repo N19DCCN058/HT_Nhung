@@ -1,0 +1,583 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#define BLYNK_PRINT Serial
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <DHT.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <time.h>
+#include <EEPROM.h> 
+#include <ESP8266WebServer.h>
+#include <ESP8266Ping.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+const long offsetTime = 25200;
+WiFiUDP NTP;
+NTPClient srituhobbyTime(NTP, "pool.ntp.org", offsetTime);
+ESP8266WebServer webServer(80);
+const IPAddress apIP(192, 168, 1, 1);  
+//char auth[] = "AHP7tctzhVdFC7j29bTLmQElgB8-RbeE";//Enter your Auth token 
+//char ssid[] = "J07";//Enter your WIFI name
+//char pass[] = "0969665471";//Enter your WIFI password
+
+DHT dht(D4, DHT11); //(sensor pin,sensor type)
+BlynkTimer timer;
+int warningLevel_gas = 25;
+int warningLevel_temp = 50;
+int warningLevel_humi = 50;
+int flameValue = 1;
+int warningValue = 0;
+int warningBtn = 1;
+int buttonState = 1;
+boolean internetStatus = 0;
+String auth;
+String ssid;                 
+String pass;
+String ssidList;
+#define MQ2 A0
+#define flame D0
+#define btnFlash D3
+#define vccFlameSensor D5
+#define ledLCD D6
+#define relay1 D7
+#define relay2 D8
+
+
+byte wifiIcon[8] = {
+  B00000,
+  B00000,
+  B00000,
+  B00000,
+  B00000,
+  B00011,
+  B11011,
+  B11011
+};
+byte wifiIcon_[8] = {
+  B00011,
+  B00011,
+  B00011,
+  B11011,
+  B11011,
+  B11011,
+  B11011,
+  B11011
+};
+byte warningIcon[8] = {
+  B00000,
+  B00000,
+  B00000,
+  B00000,
+  B00001,
+  B00010,
+  B00100,
+  B01111,
+};
+byte warningIcon_[8] = {
+  B00100,
+  B01010,
+  B10101,
+  B00100,
+  B00100,
+  B00000,
+  B00100,
+  B11111,
+};
+byte warningIcon__[8] = {
+  B00000,
+  B00000,
+  B00000,
+  B00000,
+  B10000,
+  B01000,
+  B00100,
+  B11110,
+};
+byte fireIcon_off[8] = {
+  B00100,
+  B00100,
+  B01010,
+  B01010,
+  B10001,
+  B10001,
+  B10001,
+  B01110,
+};
+byte fireIcon_on[8] = {
+  B00100,
+  B00100,
+  B01110,
+  B01110,
+  B11111,
+  B11111,
+  B11111,
+  B01110,
+};
+byte disconnected[8] = {
+  B10001,
+  B01010,
+  B00100,
+  B01010,
+  B10001,
+  B00011,
+  B11011,
+  B11011
+};
+byte disconnected_[8] = {
+  B00011,
+  B00011,
+  B11011,
+  B11011,
+  B11011,
+  B11011,
+  B11011,
+  B11011
+};
+unsigned long lastEmailTime = 0;
+unsigned long emailInterval = 300000; // thời gian giữa các lần gửi mail (5 phút = 300,000 ms)
+void sendEmail(String  content) {
+  srituhobbyTime.update();
+  // Kiểm tra nếu đã đủ thời gian giữa các lần gửi mail
+  if (srituhobbyTime.getEpochTime() - lastEmailTime >= emailInterval) {
+    Blynk.email("","Warning",content);
+    lastEmailTime = srituhobbyTime.getEpochTime();
+    Serial.print("Send email at ");
+    Serial.println(lastEmailTime);
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  EEPROM.begin(512); 
+  Wire.begin(D2,D1);
+  delay(10);
+  srituhobbyTime.begin();
+  lcd.init();
+  lcd.createChar(0, wifiIcon);
+  lcd.createChar(1, wifiIcon_);
+  lcd.createChar(2, warningIcon);
+  lcd.createChar(3, warningIcon_);
+  lcd.createChar(4, warningIcon__);
+  lcd.createChar(5, fireIcon_off);
+  lcd.createChar(6, fireIcon_on);
+  lcd.createChar(7, disconnected);
+  lcd.backlight();
+  pinMode(btnFlash, INPUT_PULLUP);
+//  attachInterrupt(btnFlash, ClearEEPROM, FALLING);  
+  pinMode(vccFlameSensor, OUTPUT);
+  digitalWrite(vccFlameSensor, HIGH);
+  pinMode(ledLCD, OUTPUT);
+  digitalWrite(ledLCD, HIGH);
+  pinMode(flame, INPUT_PULLDOWN_16);
+  pinMode(relay1, OUTPUT);
+  pinMode(relay2, OUTPUT);
+  digitalWrite(relay1, HIGH);
+  digitalWrite(relay2, HIGH);
+  lcd.setCursor(7, 0);
+  lcd.write(0);
+  lcd.write(1);
+  lcd.setCursor(1, 1);
+  lcd.print("Connecting....");
+  if(restore_config()){
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int time_conn = srituhobbyTime.getEpochTime() + 60;
+    while (WiFi.status() != WL_CONNECTED and srituhobbyTime.getEpochTime() < time_conn) {
+      if( WiFi.status() == WL_CONNECTED){
+        WiFi.disconnect();
+        break;
+      }
+      delay(1000);
+      Serial.println("Connecting to WiFi...");
+    }
+    Serial.println(WiFi.status());
+    if(WiFi.status() != WL_CONNECTED) {
+      Serial.println("Can't Connect...");
+      lcd.clear();
+    }
+    else {
+      Blynk.begin(auth.c_str(), ssid.c_str(), pass.c_str(), "blynk.iot-cm.com", 8080);
+      dht.begin();
+      lcd.setCursor(0, 1);
+      timer.setInterval(100L, warningBTNCheck);
+      timer.setInterval(100L, DHT11sensor);
+      timer.setInterval(100L, Time);
+      timer.setInterval(100L, flamegassensor);
+      timer.setInterval(10L, checkBtnFlash);
+      timer.setInterval(5000L, checkConnection);
+      lcd.clear();
+      lcd.setCursor(0, 1);
+      lcd.write(0);
+      lcd.write(1);
+      return; 
+    }
+  }
+  ssid = "NodeMCU";
+  pass = "12345678";
+  WiFi.softAP(ssid,pass); 
+  startWebServer(); 
+  lcd.clear();
+  lcd.setCursor(2, 1);
+  lcd.write(6);
+  lcd.setCursor(0, 1);
+  lcd.write(7);
+  lcd.write(1);
+  dht.begin();
+  timer.setInterval(100L, warningBTNCheck);
+  timer.setInterval(100L, DHT11sensor);
+  timer.setInterval(100L, Time);
+  timer.setInterval(100L, flamegassensor);
+  timer.setInterval(10L, checkBtnFlash);
+  timer.setInterval(6000L, checkConnection);
+}
+void startWebServer() {
+  int n = WiFi.scanNetworks();    //quet cac mang wifi xung quanh xem co bao nhieu mang
+  delay(100);
+  for (int i = 0; i < n; ++i) {    //dua danh sach wifi vao list
+    ssidList += "<option value=\"";
+    ssidList += WiFi.SSID(i);
+    ssidList += "\">";
+    ssidList += WiFi.SSID(i);
+    ssidList += "</option>";
+  }
+  delay(100);
+  Serial.print("Starting Web Server at ");
+  Serial.println(WiFi.softAPIP());
+  webServer.on("/", []() {   
+    webServer.send(200,   "text/html", "<!DOCTYPE html><html lang='en'><head><title>Wifi Setup</title><style>*{margin: 0;padding: 0;font-family: 'poppins',sans-serif;}section{display: flex;justify-content: center;align-items: center;min-height: 100vh;width: 100%;background: linear-gradient(to bottom, #7927b2, #fb3182);background-position: center;background-size: cover;}.form-box{position: relative;width: 400px;height: 450px;background: transparent;border: 2px solid rgba(255,255,255,0.5);border-radius: 20px;backdrop-filter: blur(15px);display: flex;justify-content: center;align-items: center;}h2{font-size: 2em;color: #fff;text-align: center;}.inputbox{position: relative;margin: 30px 0;width: 310px;border-bottom: 2px solid #ffffff;}.inputbox label{position: absolute;top: 50%;left: 5px;transform: translateY(-50%);color: #fff;font-size: 1em;pointer-events: none;transition: .5s;}input:focus ~ label,input:valid ~ label{top: -0px;}.inputbox input {width: 100%;height: 50px;background: transparent;border: none;outline: none;font-size: 1em;padding:0 35px 0 5px;color: #fff;}.inputbox ion-icon{position: absolute;right: 8px;color: #fff;font-size: 1.2em;top: 20px;}button{width: 100%;height: 40px;border-radius: 40px;background: #fff;border: none;outline: none;cursor: pointer;font-size: 1em;font-weight: 600;}</style></head><body><section><div class='form-box'><div class='form-value'><form action='/submit' method='post'><h2>Wifi Setup</h2><div class='inputbox'><ion-icon name='wifi'></ion-icon><input type='text' required name='ssid' list='ListSSID' autocomplete='off'><datalist id='ListSSID'> "+ ssidList + "</datalist><label for='ssid'>SSID</label></div><div class='inputbox'><ion-icon name='lock-closed-outline'></ion-icon><input type='password' required name='pass'><label for='pass'>Password</label></div><div class='inputbox'><ion-icon name='shield-checkmark-outline'></ion-icon> <input type='text' required name='auth' autocomplete='off'><label for='auth'>Auth</label></div><button>Submit</button></form></div></div></section></body></html>");
+
+//    webServer.send(200,   "text/html", "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Wifi Setup</title> <style>*,::after,::before{box-sizing:border-box;}body{margin:0;font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','Liberation Sans';font-size:1rem;font-weight:400;line-height:1.5;color:#212529;background-color:#f5f5f5;} select { display:block;width:100%;height:calc(1.5em + .75rem + 2px) background-color: #fff; border: 1px solid #ccc; border-radius: 3px; padding: 5px; font-size: 16px;} select:focus { outline: none; border-color: #00bcd4; box-shadow: 0 0 5px #00bcd4;} .form-control{display:block;width:100%;height:calc(1.5em + .75rem + 2px);border:1px solid #ced4da;}button{cursor: pointer;border:1px solid transparent;color:#fff;background-color:#007bff;border-color:#007bff;padding:.5rem 1rem;font-size:1.25rem;line-height:1.5;border-radius:.3rem;width:100%}.form-signin{width:100%;max-width:400px;padding:15px;margin:auto;}h1{text-align: center}</style> </head> <body><main class='form-signin'> <form action='/submit' method='post'> <h1 class=''>Wifi Setup</h1><br/><div class='form-floating'><div class='form-floating'><label>SSID</label><select name='ssid' >"+ ssidList +"</select></div><div class='form-floating'><br><label>Password</label><input type='password' class='form-control' name='pass'> </div><div class='form-floating'><br/><label>Auth</label><input type='text' class='form-control' name='auth'></div><br/><br/><button type='submit'>Submit</button><p style='text-align: right'></p></form></main> </body></html>" );
+
+  });
+  webServer.on("/submit", []() {
+    ssid = webServer.arg("ssid");
+    Serial.print("SSID: ");
+    Serial.println(ssid);
+    pass = webServer.arg("pass");
+    Serial.print("Password: ");
+    Serial.println(pass);
+    auth = webServer.arg("auth");
+    Serial.print("Auth: ");
+    Serial.println(auth);
+    lcd.clear();
+    lcd.setCursor(7, 0);
+    lcd.write(0);
+    lcd.write(1);
+    lcd.setCursor(1, 1);
+    lcd.print("Connecting....");
+    Serial.println("Connecting...");
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    int time_conn = srituhobbyTime.getEpochTime() + 60;
+    while (WiFi.status() != WL_CONNECTED and srituhobbyTime.getEpochTime() < time_conn) {
+      if(digitalRead(D3) == LOW){
+        break;
+      }
+      delay(1000);
+      Serial.println("Connecting to WiFi...");
+    }
+    Serial.println(WiFi.status());
+    if(WiFi.status() != WL_CONNECTED) {
+      Serial.println("Can't Connect...");
+      WiFi.softAP("NodeMCU","12345678"); 
+      webServer.begin();
+      lcd.clear();
+      return;
+    }
+    Blynk.begin(auth.c_str(), ssid.c_str(), pass.c_str(), "blynk.iot-cm.com", 8080);
+    if(Blynk.connected()) {
+      for (int i = 0; i < 128; ++i) {
+        EEPROM.write(i, 0);               //xoa bo nho EEPROM
+      }
+      for (int i = 0; i < ssid.length(); ++i) {
+        EEPROM.write(i, ssid[i]);
+      }
+      for (int i = 0; i < pass.length(); ++i) {
+        EEPROM.write(32 + i, pass[i]);
+      }
+      for (int i = 0; i < auth.length(); ++i) {
+        EEPROM.write(96 + i, auth[i]);
+      }
+      EEPROM.commit();
+      Serial.println("SAVED");
+    }
+    else {
+      WiFi.softAP("NodeMCU","12345678"); 
+    }
+    lcd.clear();
+  });
+  webServer.begin();
+  Serial.println("Web server started");
+}
+boolean restore_config(){
+  if(EEPROM.read(0) != 0){
+    Serial.println("Reading Wifi Setup...");
+    ssid = "";
+    pass= "";
+    auth= "";
+    for (int i=0; i<32; ++i){
+      ssid += char(EEPROM.read(i));
+    }
+    Serial.print("SSID: ");
+    Serial.println(ssid);
+    for (int i=32; i<96; ++i){
+      pass += char(EEPROM.read(i));
+    }
+    Serial.print("PASSWORD: ");
+    Serial.println(pass);
+    for (int i=96; i<128; ++i){
+      auth += char(EEPROM.read(i));
+    }
+    Serial.print("AUTH TOKEN: ");
+    Serial.println(auth);
+    return true;
+  }else{
+    Serial.println("Config not found!");
+    return false;
+  }
+}
+ICACHE_RAM_ATTR  void ClearEEPROM(){
+  for (int i = 0; i < 96; ++i) {
+    EEPROM.write(i, 0);               //xoa bo nho EEPROM
+    delay(20);
+  }
+  EEPROM.commit();
+  Serial.println("CLEAR EEPROM");
+}
+void DHT11sensor() {
+  if(warningValue == 1) {
+    return;
+  }
+  int h = dht.readHumidity();
+  int t = dht.readTemperature();
+
+  if (isnan(h) || isnan(t)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+  else if(t > warningLevel_temp and h < warningLevel_humi) {
+    warningValue = 1;
+    warningBtn = 0;
+    lcd.setCursor(6, 0);
+    lcd.write(2);
+    lcd.write(3);
+    lcd.write(4);
+    lcd.setCursor(2, 1);
+    lcd.print("Excessive heat");
+    sendEmail("Excessive heat warning");
+    Blynk.notify("Warning! Excessive heat warning");
+    digitalWrite(relay1, HIGH);
+    Blynk.virtualWrite(V7, HIGH);
+    digitalWrite(relay2, LOW);
+    Blynk.virtualWrite(V8, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, HIGH);
+    lcd.clear();
+    
+  }
+  else {
+  
+    Blynk.virtualWrite(V2,t);
+    Blynk.virtualWrite(V3, h);
+  
+    lcd.setCursor(10, 0);
+    lcd.print("T:");
+    lcd.print(t);
+    lcd.print((char)223);
+    lcd.print("C");
+  
+    lcd.setCursor(10, 1);
+    lcd.print("H:");
+    lcd.print(h);
+    lcd.print("% ");
+  }
+}
+BLYNK_CONNECTED() {
+  Blynk.syncVirtual(V0); // GAS WARNING LEVEL
+  Blynk.syncVirtual(V1); // GAS LEVEL
+  Blynk.syncVirtual(V2); // TEMPERATURE
+  Blynk.syncVirtual(V3); // HUMIDITY
+  Blynk.syncVirtual(V4); // FLAME SENSOR (ON - 1/OFF - 0)
+  Blynk.syncVirtual(V5); // TEMP WARNING LEVEL
+  Blynk.syncVirtual(V6); // HUMI WARNING LEVEL
+  Blynk.syncVirtual(V7); // RELAY 1
+  Blynk.syncVirtual(V8); // RELAY 2
+}
+BLYNK_WRITE(V4) {
+  flameValue = param.asInt();
+}
+BLYNK_WRITE(V0) {
+  warningLevel_gas = param.asInt();
+}
+BLYNK_WRITE(V5) {
+  warningLevel_temp = param.asInt();
+}
+BLYNK_WRITE(V6) {
+  warningLevel_humi = param.asInt();
+}
+BLYNK_WRITE(V7) {
+  if (param.asInt() == 0) 
+  {   
+    digitalWrite(relay1, LOW); 
+  } 
+  else 
+  {
+    digitalWrite(relay1, HIGH);
+  }
+}
+BLYNK_WRITE(V8) {
+  warningBtn = param.asInt();
+  if (warningBtn == 0) 
+  {   
+    digitalWrite(relay2, LOW); 
+  } 
+  else 
+  {
+    digitalWrite(relay2, HIGH);
+    lcd.setCursor(8, 0);
+    lcd.print(" ");
+  }
+}
+void warningBTNCheck() {
+  if(warningValue == 1) {
+    return;
+  }
+  if(warningBtn == 0){
+    lcd.setCursor(6, 0);
+    lcd.write(2);
+    lcd.write(3);
+    lcd.write(4);
+    delay(1500);
+    digitalWrite(ledLCD, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, HIGH);
+  }
+}
+void flamegassensor() {
+  bool value = digitalRead(flame );
+  int valueMq_2 = analogRead(MQ2);
+  valueMq_2 = map(valueMq_2, 0, 1024, 0, 100);
+  if (value == 0 && flameValue == 1) {
+    warningValue = 1;
+    warningBtn = 0;
+    lcd.setCursor(6, 0);
+    lcd.write(2);
+    lcd.write(3);
+    lcd.write(4);
+    lcd.setCursor(2, 1);
+    lcd.print("Fire detected");
+    sendEmail("Fire leak detected");
+    Blynk.notify("Warning! Fire was detected");
+    digitalWrite(relay1, HIGH);
+    Blynk.virtualWrite(V7, HIGH);
+    digitalWrite(relay2, LOW);
+    Blynk.virtualWrite(V8, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, HIGH);
+    lcd.clear();
+  }else if(valueMq_2 >= warningLevel_gas){
+    warningValue = 1;
+    warningBtn = 0;
+    lcd.setCursor(6, 0);
+    lcd.write(2);
+    lcd.write(3);
+    lcd.write(4);
+    lcd.setCursor(2, 1);
+    lcd.print("Gas detected");
+    sendEmail("Gas leak detected");
+    Blynk.notify("Warning! Gas leak detected");
+    digitalWrite(relay1, HIGH);
+    Blynk.virtualWrite(V7, HIGH);
+    digitalWrite(relay2, LOW);
+    Blynk.virtualWrite(V8, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, LOW);
+    delay(1500);
+    digitalWrite(ledLCD, HIGH);
+    lcd.clear();
+  }else {
+    warningValue = 0;
+    Blynk.virtualWrite(V1, valueMq_2);
+    lcd.setCursor(4, 1);
+    lcd.print("G:");
+    lcd.print(valueMq_2);
+    lcd.print(" ");
+  }
+}
+void Time() {
+  if(warningValue == 1 or warningBtn == 0) {
+    return;
+  }
+  if(flameValue == 0){
+    lcd.setCursor(2, 1);
+    lcd.write(5);
+  }
+  else {
+    lcd.setCursor(2, 1);
+    lcd.write(6);
+  }
+  srituhobbyTime.update();
+  lcd.setCursor(0, 0);
+  lcd.print(srituhobbyTime.getFormattedTime());
+  delay(800);
+}
+void checkConnection() {
+  if(warningValue == 1) {
+    return;
+  }
+  switch (WiFi.status()) {
+    case WL_CONNECTED:
+      lcd.setCursor(0, 1);
+      lcd.write(0);
+      lcd.write(1);
+      internetStatus = 1;
+      Serial.println("WiFi connected");
+      break;
+    case WL_CONNECT_FAILED:
+      lcd.setCursor(0, 1);
+      lcd.write(7);
+      lcd.write(1);
+      internetStatus = 0;
+      Serial.println("WiFi connection failed");
+      WiFi.softAP("NodeMCU","12345678"); 
+      break;
+    case WL_IDLE_STATUS:
+    case WL_NO_SSID_AVAIL:
+    case WL_SCAN_COMPLETED:
+    case WL_DISCONNECTED:
+      lcd.setCursor(0, 1);
+      lcd.write(7);
+      lcd.write(1);
+      internetStatus = 0;
+      Serial.println("WiFi connection failed");
+      break;
+    default:
+      break;
+  }
+}
+void checkBtnFlash() {
+  if(digitalRead(D3) == LOW  && buttonState == 1) {
+    buttonState = 0;
+    if(warningBtn == 0) {
+      digitalWrite(relay2, HIGH);
+      Blynk.virtualWrite(V8, HIGH);
+      lcd.setCursor(8, 0);
+      lcd.print(" ");
+      warningBtn = 1;
+    }
+    else {
+      ClearEEPROM();
+    }
+  } else if (digitalRead(D3) == HIGH  && buttonState == 0) {
+    buttonState = 1;
+  }
+}
+void loop() {
+  if( internetStatus == 1) {
+    Blynk.run();
+  }
+  timer.run();
+  webServer.handleClient();
+}
